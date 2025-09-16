@@ -1,64 +1,40 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import youtubedl from "youtube-dl-exec";
+import formidable from "formidable";
 import fs from "fs";
 import path from "path";
 import OpenAI from "openai";
-import ffmpeg from "ffmpeg-static";
-import { randomUUID } from "crypto";
 
-// Absolute path to ffmpeg
-const ffmpegAbsolutePath = ffmpeg as string;
+export const config = { api: { bodyParser: false } };
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const { url } = req.body;
-  if (!url) return res.status(400).json({ error: "No URL provided" });
+  const uploadDir = path.join(process.cwd(), "uploads");
+  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 
-  // ✅ Generate unique temp file name to avoid history issues
-  const tempFilePath = path.join(process.cwd(), `temp_${randomUUID()}.mp3`);
+  const form = formidable({ uploadDir, keepExtensions: true, maxFiles: 1 });
+
+  const parsedForm = () =>
+    new Promise<{ fields: formidable.Fields; files: formidable.Files }>((resolve, reject) =>
+      form.parse(req, (err, fields, files) => (err ? reject(err) : resolve({ fields, files })))
+    );
 
   try {
-    console.log("Downloading audio...");
-
-    await youtubedl(url, {
-      extractAudio: true,
-      audioFormat: "mp3",
-      output: tempFilePath,
-      ffmpegLocation: ffmpegAbsolutePath,
-    });
-
-    console.log("Audio download finished, sending to OpenAI...");
-
-    if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Missing OpenAI API key" });
-    }
+    const { files } = await parsedForm();
+    const uploadedFile = Array.isArray(files.file) ? files.file[0] : files.file;
+    if (!uploadedFile) return res.status(400).json({ error: "No file uploaded" });
 
     const transcription = await openai.audio.transcriptions.create({
-      file: fs.createReadStream(tempFilePath),
+      file: fs.createReadStream(uploadedFile.filepath),
       model: "whisper-1",
     });
 
-    console.log("Transcription complete:", transcription.text);
-
+    fs.unlinkSync(uploadedFile.filepath);
     res.status(200).json({ transcription: transcription.text });
-  } catch (error: any) {
-    console.error("Error in transcription pipeline:", error);
-    if (error.code === "insufficient_quota" || error.status === 429) {
-      return res.status(429).json({ error: "OpenAI quota exceeded. Please check your plan." });
-    }
-    res.status(500).json({ error: error.message });
-  } finally {
-    // ✅ Always clean up
-    if (fs.existsSync(tempFilePath)) {
-      fs.unlinkSync(tempFilePath);
-    }
+  } catch (err: any) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 }
