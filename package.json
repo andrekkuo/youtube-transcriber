@@ -17,7 +17,6 @@
     "path": "^0.12.7",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "youtube-dl-exec": "^3.0.25",
     "ytdl-core": "^4.11.5"
   },
   "devDependencies": {
